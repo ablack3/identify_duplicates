@@ -1,0 +1,116 @@
+---
+title: "Clustering With A Custom Distance Metric"
+author: "Adam Black"
+date: "June 24, 2018"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+```
+
+# Create fake data
+
+Suppose we have some information about our customers and we want to identify potential duplicate entries using this information. We don't know how many actual unique customers we have but if two customers have the same email address, similar purchase histories then we might want to assume they are the same person. Our goal is to create a new customer id that tries to identify unique customers from our current customer list that likely contains duplicate entries. It is important to note that we cannot know for sure if we have succeeded. This is an unsupervised learning task.
+
+```{r}
+library(tibble)
+library(dplyr)
+
+set.seed(12345)
+n <- 6
+df <- data_frame(id = 1:n,
+                 email = sample(c("Alex@gmail.com", "alex.a@hotmail.com", "alex.a.abbott@gmail.com"), n, replace = T),
+                 state = factor(sample(c("ME", "NH", "VT"), n, replace = T)),
+                 merchant1_prior = rpois(n, lambda = 3),
+                 merchant2_prior = rpois(n, lambda = 2),
+                 browser = factor(sample(c("Chrome", "Firefox", "IE"), n, replace = T)),
+                 sex = factor(sample(c("M", "F"), n, replace = T), levels = c("M", "F")))
+
+df
+```
+
+
+# Define distance metric
+
+We want to define a measure of distance between entries in our data. We will do this by first defining a distance metric between row for each individual variable/feature in our dataset. A simple distance metric for state would to define a distance of 0 if two customers purchased from the same state and a distance of 1 if they purchased from the different states. We will do a similar thing for other factor variables as well.
+
+
+```{r}
+# define a  function that calcuates the distace between two rows 
+fn <- function(row1, row2){
+     proxy::dist(row1["state"], row2["state"]) 
+}
+
+# calculate the distance between each pair or rows using the custom function
+proxy::dist(df, method = fn)
+```
+
+For the distance between email addresses we could use the minimum edit distance or Levenshtein
+```{r}
+fn <- function(row1, row2){
+     stringdist::stringdist(row1[["email"]], row2[["email"]], method = "lv") 
+}
+
+proxy::dist(df, method = fn)
+```
+
+For the distance between integers such as number of previous purchases we can use the Euclidian distance or L2 norm
+```{r}
+fn <- function(row1, row2){
+     proxy::dist(row1[["merchant1_prior"]], row2[["merchant1_prior"]], method = "L2") 
+}
+
+proxy::dist(df, method = fn)
+```
+
+
+For the distance between sex we might want to add an aditional penalty since two records with different sex are unlikely to be the same person. Our distance metric for sex will be 0 if two people have the same sex and 10 if they are different.
+
+```{r}
+fn <- function(row1, row2){
+     10*proxy::dist(row1["sex"], row2["sex"])
+}
+
+proxy::dist(df, method = fn)
+
+```
+
+
+Next we will combine all these individual metrics to create a composite metric that defines distance between two rows in the data using all variables. There is a lot of room for customizing this by adjusting weights (like we did with sex) and trying different metrics.
+
+```{r}
+fn <- function(row1, row2){
+     stringdist::stringdist(row1[["email"]], row2[["email"]], method = "lv") +
+     proxy::dist(row1["state"], row2["state"])  +
+     proxy::dist(row1[["merchant1_prior"]], row2[["merchant1_prior"]], method = "L2") +
+     proxy::dist(row1[["merchant2_prior"]], row2[["merchant2_prior"]], method = "L2") +
+     proxy::dist(row1["browser"], row2["browser"])  +
+     10*proxy::dist(row1["sex"], row2["sex"])
+}
+
+(distance_matrix <- proxy::dist(df, method = fn))
+```
+
+# Cluster
+Next we will use hierarchical clustering to get at unique customers. If the distance between two customers in our original data is small then we want to assign the same value for our new customer id.
+
+```{r}
+
+cluster <- hclust(distance_matrix) 
+plot(cluster)
+```
+
+We will cut this tree based on a specific height. All splits below that height will be considered the same customer. I don't know if there is any good way to decide on a height other than trial and error. For now I'll try 5. Finally we will add the new customer id to the original data.
+
+```{r}
+new_id <- cutree(cluster, h = 5) 
+
+df %>% 
+     mutate(new_id = new_id)
+     
+```
+
+
+
